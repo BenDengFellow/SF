@@ -145,6 +145,7 @@ class BatchUI:
         self.excel_ctx: Optional[ExcelContext] = None
         self.order_no_var = tk.StringVar()
         self.current_row_index: Optional[int] = None  # 在 excel_ctx.rows (不含表头) 中的索引
+        self.current_seq_value: Optional[str] = None  # 保存当前序号 (xu)
         self.driver: Optional[WebDriver] = None
 
         # 第一行: 选择Excel
@@ -203,6 +204,7 @@ class BatchUI:
             messagebox.showwarning("提示", f"未找到序号 {val}")
             return
         self.current_row_index = idx
+        self.current_seq_value = val  # 保存序号数字 xu
         waybill = self.get_current_waybill()
         # Excel 实际行号 = header_row_index(0-based) + 1 转 1-based + 1 数据偏移 + idx
         excel_row_num = self.excel_ctx.header_row_index + 2 + idx
@@ -250,7 +252,37 @@ class BatchUI:
         self.btn_confirm.config(state=tk.DISABLED)
         self.status_var.set("生成 PDF 中...")
         def _pdf():
-            pdf_path = print_to_pdf(self.driver, waybill)
+            # 注入右上角覆盖文字: 序号{xu}-{waybill}
+            overlay_text = f"序号{self.current_seq_value}-{waybill}"
+            try:
+                js = (
+                    "(function(){"  # 创建覆盖层
+                    "var id='__sf_overlay__';" 
+                    "var old=document.getElementById(id);" 
+                    "if(old){old.remove();}" 
+                    "var div=document.createElement('div');" 
+                    "div.id=id;" 
+                    "div.textContent='" + overlay_text + "';" 
+                    "div.style.position='fixed';" 
+                    "div.style.top='8px';" 
+                    "div.style.right='12px';" 
+                    "div.style.zIndex='999999';" 
+                    "div.style.padding='6px 10px';" 
+                    "div.style.background='rgba(255,255,0,0.85)';" 
+                    "div.style.border='1px solid #e0a800';" 
+                    "div.style.font='14px/1.2 \"Microsoft YaHei\",sans-serif';" 
+                    "div.style.color='#000';" 
+                    "div.style.boxShadow='0 0 4px rgba(0,0,0,0.2)';" 
+                    "document.body.appendChild(div);" 
+                    "})();"
+                )
+                self.driver.execute_script(js)
+            except Exception as e:
+                print(f"注入覆盖文字失败: {e}")
+
+            # 使用自定义文件名 序号{xu}-{waybill}.pdf
+            custom_name = f"序号{self.current_seq_value}-{waybill}"
+            pdf_path = print_to_pdf(self.driver, custom_name)
             if pdf_path:
                 self.status_var.set(f"PDF 已生成: {os.path.basename(pdf_path)} 点击 '下一单'")
                 self.btn_next.config(state=tk.NORMAL)
@@ -266,6 +298,7 @@ class BatchUI:
         self.btn_next.config(state=tk.DISABLED)
         self.status_var.set("读取下一行...")
         self.current_row_index += 1
+        self.current_seq_value = None
         if self.current_row_index >= len(self.excel_ctx.data_rows):
             self.status_var.set("已到文件末尾, 程序结束")
             return
