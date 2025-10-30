@@ -2,8 +2,7 @@
 
 功能:
 1. 传入顺丰运单号, 打开官网详情页.
-2. 等待页面出现图形验证码, 手动输入后提交.
-3. 向下滚动到底部, 从下往上查找文字 "展开详情" 并点击.
+2. 页面后续操作 (验证码、展开详情等) 由用户在浏览器中手动进行。
 
 使用:
     python sf_waybill_detail.py SF1234567890123
@@ -12,201 +11,260 @@
 
 注意:
 - 该页面可能使用反爬策略, 请控制访问频率.
-- 验证码需要人工输入.
+- 若出现验证码请手动处理 (脚本已移除验证码输入逻辑).
 """
 from __future__ import annotations
 import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
+import base64
+import os
+import threading
+try:
+    import tkinter as tk
+    from tkinter import messagebox
+except Exception:
+    tk = None  # headless/no tk available
 
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.remote.webdriver import WebDriver
-from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
 BASE_URL = "https://www.sf-express.com/chn/sc/waybill/waybill-detail/{waybill}"
 
 @dataclass
 class WaybillResult:
     waybill: str
-    detail_expanded: bool
     page_title: str
+    pdf_path: Optional[str] = None
+    driver: Optional[WebDriver] = None  # 返回以便后续 UI 继续使用
 
 
-def _detect_browser_binary(browser: str) -> Optional[str]:
-    """在常见默认目录中尝试查找浏览器可执行文件路径."""
+def _detect_edge_binary() -> Optional[str]:
+    """在常见默认目录中尝试查找 Edge 浏览器可执行文件路径."""
     import os
-    candidates: list[str] = []
-    if browser == "chrome":
-        candidates = [
-            r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-            r"C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-        ]
-    elif browser == "edge":
-        candidates = [
-            r"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-            r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-        ]
+    candidates = [
+        r"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+        r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    ]
     for p in candidates:
         if os.path.exists(p):
             return p
     return None
 
 
-def create_driver(browser: str = "chrome", *, headless: bool = False, binary_path: Optional[str] = None) -> WebDriver:
-    """创建浏览器驱动, 支持 chrome / edge.
+def create_driver(*, headless: bool = False, binary_path: Optional[str] = None, driver_path: Optional[str] = None) -> WebDriver:
+    """仅创建 Edge 浏览器驱动.
 
-    :param browser: 浏览器类型 (chrome|edge)
-    :param headless: 是否无头模式
-    :param binary_path: 浏览器可执行文件路径; 为空时尝试自动探测
+    优先使用 Selenium Manager 自动解析 msedgedriver; 若失败可手动指定 driver_path.
+    Selenium 4.6+ 已内置 Selenium Manager, 不需要 webdriver-manager.
     """
-    browser = browser.lower()
-    if browser not in {"chrome", "edge"}:
-        raise ValueError("browser 必须是 'chrome' 或 'edge'")
-
+    from selenium.webdriver.edge.options import Options as EdgeOptions
+    from selenium.webdriver.edge.service import Service as EdgeServiceLocal
     if not binary_path:
-        binary_path = _detect_browser_binary(browser)
+        binary_path = _detect_edge_binary()
     if not binary_path:
-        print(f"警告: 未在默认路径找到 {browser} 可执行文件, 将依赖系统 PATH. 若启动失败请安装或指定 --binary-path")
+        print("警告: 未在默认路径找到 Edge 可执行文件, 将依赖系统 PATH. 若启动失败请安装或指定 --binary-path")
+    options = EdgeOptions()
+    if headless:
+        options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1280,900")
+    if binary_path:
+        options.binary_location = binary_path
 
-    if browser == "chrome":
-        from selenium.webdriver.chrome.options import Options as ChromeOptions
-        options = ChromeOptions()
-        if headless:
-            options.add_argument("--headless=new")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--window-size=1280,900")
-        if binary_path:
-            options.binary_location = binary_path
-        driver: WebDriver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
-    else:  # edge
-        from selenium.webdriver.edge.options import Options as EdgeOptions
-        options = EdgeOptions()
-        if headless:
-            options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1280,900")
-        if binary_path:
-            options.binary_location = binary_path
-        driver = webdriver.Edge(service=EdgeService(EdgeChromiumDriverManager().install()), options=options)
+    try:
+        # 直接调用, 让 Selenium Manager 自动下载/定位驱动
+        driver = webdriver.Edge(options=options)
+    except Exception as e:
+        print(f"Selenium Manager 自动获取 EdgeDriver 失败: {e}")
+        if not driver_path:
+            # 常见本地缓存/手动放置位置尝试
+            import os
+            guesses = [
+                os.path.join(os.getcwd(), "msedgedriver.exe"),
+                r"C:\\msedgedriver.exe",
+            ]
+            for g in guesses:
+                if os.path.exists(g):
+                    driver_path = g
+                    break
+        if not driver_path:
+            raise RuntimeError("无法自动获取 EdgeDriver。请手动下载 msedgedriver.exe 并使用 --driver-path 指定其路径。下载地址: https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/") from e
+        print(f"使用手动指定 EdgeDriver 路径: {driver_path}")
+        service = EdgeServiceLocal(executable_path=driver_path)
+        driver = webdriver.Edge(service=service, options=options)
 
     driver.set_page_load_timeout(60)
     return driver
 
 
-def wait_for_captcha_and_input(driver: webdriver.Chrome, timeout: int = 120) -> None:
-    """等待验证码图片出现, 提示用户输入, 然后提交.
+## 已移除验证码自动处理函数 (wait_for_captcha_and_input)
 
-    页面结构可能会变化, 这里通过寻找包含 'captcha' 的 img 或 input 以及提交按钮来做一个较宽松的匹配.
+
+## 自动查找并点击“展开详情”逻辑已移除，保留简洁核心功能。
+
+
+def _print_page_to_pdf(driver: WebDriver, waybill: str, output_dir: str = "output") -> Optional[str]:
+    """使用 Chromium DevTools 协议将当前页面保存为 PDF.
+
+    Edge / Chrome 驱动均支持 `execute_cdp_cmd('Page.printToPDF', params)`。
+    返回生成的 PDF 路径, 若失败返回 None.
     """
-    wait = WebDriverWait(driver, timeout)
-    # 尝试等待输入框出现
     try:
-        captcha_input = wait.until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "input[name*='captcha'], input[id*='captcha'], input[class*='captcha']"))
-        )
-    except Exception:
-        print("未检测到验证码输入框, 可能无需验证码或页面结构已变化.")
-        return
-
-    # 尝试找到验证码图片, 纯提示用
-    try:
-        captcha_img = driver.find_element(By.CSS_SELECTOR, "img[src*='captcha'], img[class*='captcha']")
-        print("已检测到验证码图片, 请查看浏览器窗口.")
-    except Exception:
-        print("未找到验证码图片, 仅发现输入框.")
-
-    code = input("请输入图片验证码并按回车确认: ").strip()
-    captcha_input.clear()
-    captcha_input.send_keys(code)
-    # 尝试提交: 找按钮或回车
-    try:
-        submit_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], button[class*='captcha'], button[class*='submit']")
-        submit_btn.click()
-    except Exception:
-        captcha_input.send_keys(Keys.ENTER)
-
-    time.sleep(2)
-
-
-def scroll_to_bottom(driver: webdriver.Chrome) -> None:
-    last_height = driver.execute_script("return document.body.scrollHeight")
-    while True:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1.2)
-        new_height = driver.execute_script("return document.body.scrollHeight")
-        if new_height == last_height:
-            break
-        last_height = new_height
-
-
-def find_and_click_expand(driver: webdriver.Chrome) -> bool:
-    """从页面底部开始向上寻找 '展开详情' 文字并点击."""
-    # 先滚动到底部
-    scroll_to_bottom(driver)
-
-    # 获取所有元素文本, 从后往前搜索
-    elements = driver.find_elements(By.XPATH, "//*[contains(text(),'展开详情')]")
-    if not elements:
-        print("未找到 '展开详情' 元素.")
-        return False
-
-    # 选择最靠后的一个 (通常最后加载的在列表末尾)
-    target = elements[-1]
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
-    time.sleep(0.6)
-    try:
-        target.click()
-        print("已点击 '展开详情'.")
-        return True
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        pdf_b64 = driver.execute_cdp_cmd("Page.printToPDF", {
+            "landscape": False,
+            "printBackground": True,
+            "preferCSSPageSize": True,
+        })["data"]
+        pdf_data = base64.b64decode(pdf_b64)
+        pdf_path = os.path.join(output_dir, f"{waybill}.pdf")
+        with open(pdf_path, "wb") as f:
+            f.write(pdf_data)
+        print(f"PDF 已生成: {pdf_path}")
+        return pdf_path
     except Exception as e:
-        print(f"点击失败: {e}")
-        return False
+        print(f"PDF 生成失败: {e}")
+        return None
 
 
-def fetch_waybill_detail(waybill: str, *, browser: str = "chrome", headless: bool = False, binary_path: Optional[str] = None) -> WaybillResult:
-    driver = create_driver(browser=browser, headless=headless, binary_path=binary_path)
+def fetch_waybill_detail(waybill: str, *, headless: bool = False, binary_path: Optional[str] = None, driver_path: Optional[str] = None, debug: bool = False) -> WaybillResult:
+    driver = create_driver(headless=headless, binary_path=binary_path, driver_path=driver_path)
     url = BASE_URL.format(waybill=waybill)
     print(f"打开: {url}")
     driver.get(url)
 
-    # 等待可能的验证码并手动输入
-    wait_for_captcha_and_input(driver)
+    # 已移除验证码处理逻辑; 若页面出现验证码请在浏览器手动输入后继续查看。
 
-    expanded = find_and_click_expand(driver)
+    # 如果需要调试，保存初始页面源码与截图，用户自行点击展开详情
+    if debug:
+        try:
+            html_path = f"debug_{waybill}.html"
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+            screenshot_path = f"debug_{waybill}.png"
+            driver.save_screenshot(screenshot_path)
+            print(f"调试: 已保存页面源码 -> {html_path}, 截图 -> {screenshot_path}")
+        except Exception as e:
+            print(f"调试文件保存失败: {e}")
     title = driver.title
     print(f"页面标题: {title}")
 
-    result = WaybillResult(waybill=waybill, detail_expanded=expanded, page_title=title)
+    pdf_path = None
+
+    result = WaybillResult(waybill=waybill, page_title=title, pdf_path=pdf_path, driver=driver)
     # 保留窗口供进一步手动查看, 如需自动关闭可解除注释.
     # driver.quit()
     return result
+
+
+def launch_confirmation_ui(driver: WebDriver, waybill: str) -> Optional[str]:
+    """启动 Tkinter UI:
+    - 按钮 “确认”: 在你已于浏览器完成验证码+展开详情后，点击生成 PDF。
+    - 按钮 “下一单”: 在 PDF 生成完成后可点击，退出程序 (关闭窗口与浏览器)。
+
+    若系统无 Tkinter，则使用命令行交互 (回车生成 PDF, 再次回车退出)。
+    """
+    pdf_path: Optional[str] = None
+
+    if tk is None:
+        input("请在浏览器中完成验证码与展开详情后按回车生成 PDF...")
+        pdf_path = _print_page_to_pdf(driver, waybill)
+        input("PDF 已生成, 按回车退出程序...")
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        return pdf_path
+
+    def on_confirm():
+        nonlocal pdf_path
+        if confirm_btn['state'] == tk.DISABLED:
+            return
+        confirm_btn.config(state=tk.DISABLED)
+        status_var.set("正在生成 PDF...")
+        root.update_idletasks()
+        pdf_path = _print_page_to_pdf(driver, waybill)
+        if pdf_path:
+            status_var.set("PDF 已生成: 点击 '下一单' 退出")
+            next_btn.config(state=tk.NORMAL)
+        else:
+            status_var.set("生成失败, 可重试")
+            confirm_btn.config(state=tk.NORMAL)
+
+    def on_next():
+        status_var.set("正在退出...")
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        root.after(300, root.destroy)
+
+    root = tk.Tk()
+    root.title("顺丰运单 PDF 生成")
+    # 先创建后定位到屏幕右上角 (带一点边距)
+    window_w, window_h = 420, 200
+    try:
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+    except Exception:
+        screen_w, screen_h = 1920, 1080
+    margin = 12
+    pos_x = screen_w - window_w - margin
+    pos_y = margin
+    root.geometry(f"{window_w}x{window_h}+{pos_x}+{pos_y}")
+    # 置顶防止被浏览器遮挡
+    root.attributes('-topmost', True)
+    msg = tk.Label(root, text=(
+        f"运单: {waybill}\n请先在浏览器中: 1) 输入验证码并确认 2) 点击展开详情\n"
+        "完成后点击 '确认' 生成 PDF; 生成后点 '下一单' 退出"), wraplength=400, justify="left")
+    msg.pack(pady=10)
+    status_var = tk.StringVar(value="等待你的操作...")
+    confirm_btn = tk.Button(root, text="确认", width=14, command=on_confirm)
+    confirm_btn.pack(pady=4)
+    next_btn = tk.Button(root, text="下一单", width=14, state=tk.DISABLED, command=on_next)
+    next_btn.pack(pady=4)
+    status = tk.Label(root, textvariable=status_var, fg="#333")
+    status.pack(pady=6)
+
+    root.mainloop()
+    return pdf_path
 
 
 def main(argv: list[str]) -> int:
     import argparse
     parser = argparse.ArgumentParser(description="顺丰运单详情自动化操作")
     parser.add_argument("waybill", help="顺丰运单号")
-    parser.add_argument("--browser", choices=["chrome", "edge"], default="chrome", help="浏览器类型, 默认为 chrome")
-    parser.add_argument("--headless", action="store_true", help="无头模式运行")
-    parser.add_argument("--binary-path", dest="binary_path", help="浏览器可执行文件路径(可选)")
+    parser.add_argument("--headless", action="store_true", help="Edge 无头模式运行 (不建议与 UI 同用)")
+    parser.add_argument("--binary-path", dest="binary_path", help="Edge 浏览器可执行文件路径(可选)")
+    parser.add_argument("--driver-path", dest="driver_path", help="手动指定 msedgedriver.exe 路径, Selenium Manager 失败时使用")
+    parser.add_argument("--debug", action="store_true", help="失败时保存页面源码与截图")
     args = parser.parse_args(argv[1:])
 
     result = fetch_waybill_detail(
         args.waybill,
-        browser=args.browser,
         headless=args.headless,
         binary_path=args.binary_path,
+        driver_path=args.driver_path,
+        debug=args.debug,
     )
+
+    # 默认启动 UI
+    print("已打开运单页面。请在浏览器完成验证码与展开详情后, 使用弹出的窗口生成 PDF。")
+    if result.driver:
+        pdf_path = launch_confirmation_ui(driver=result.driver, waybill=args.waybill)
+        if pdf_path:
+            result.pdf_path = pdf_path
+        else:
+            print("未生成 PDF")
+    else:
+        print("内部错误: 未找到浏览器驱动实例, 无法生成 PDF")
     print(result)
     return 0
 
