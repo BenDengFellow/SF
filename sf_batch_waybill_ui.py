@@ -256,24 +256,27 @@ class BatchUI:
             overlay_text = f"序号{self.current_seq_value}-{waybill}"
             try:
                 js = (
-                    "(function(){"  # 创建覆盖层
+                    "(function(){"  # 创建顶部行并推下内容
                     "var id='__sf_overlay__';" 
                     "var old=document.getElementById(id);" 
                     "if(old){old.remove();}" 
+                    # 创建容器 wrapper，如果没有则插入 body 最前面
+                    "var body=document.body;" 
                     "var div=document.createElement('div');" 
                     "div.id=id;" 
                     "div.textContent='" + overlay_text + "';" 
-                    "div.style.position='fixed';" 
-                    "div.style.top='8px';" 
-                    "div.style.right='12px';" 
-                    "div.style.zIndex='999999';" 
-                    "div.style.padding='6px 10px';" 
-                    "div.style.background='rgba(255,255,0,0.85)';" 
-                    "div.style.border='1px solid #e0a800';" 
-                    "div.style.font='14px/1.2 \"Microsoft YaHei\",sans-serif';" 
+                    # 样式: 正常文档流顶部一行，右对齐，白底黑字
+                    "div.style.position='relative';" 
+                    "div.style.width='100%';" 
+                    "div.style.boxSizing='border-box';" 
+                    "div.style.textAlign='right';" 
+                    "div.style.font='16px/1.4 \"Microsoft YaHei\",sans-serif';" 
                     "div.style.color='#000';" 
-                    "div.style.boxShadow='0 0 4px rgba(0,0,0,0.2)';" 
-                    "document.body.appendChild(div);" 
+                    "div.style.background='#fff';" 
+                    "div.style.padding='6px 12px';" 
+                    "div.style.borderBottom='1px solid #ddd';" 
+                    "div.style.margin='0';" 
+                    "if(body.firstChild){body.insertBefore(div, body.firstChild);}else{body.appendChild(div);}" 
                     "})();"
                 )
                 self.driver.execute_script(js)
