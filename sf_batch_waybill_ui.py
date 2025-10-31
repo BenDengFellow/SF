@@ -92,13 +92,13 @@ def print_to_pdf(driver: WebDriver, basename: str, output_dir: str = "output", h
         # 构造 header/footer HTML
         hdr_html = ""
         if header_text:
-            # 右上角: 使用 table 或 div + text-align:right
+            # 右上角 + 右侧留 4 个字符的距离 (4ch)
             hdr_html = (
-                f"<div style='font-size:10px;width:100%;text-align:right;font-family:Microsoft YaHei,sans-serif;'>"
+                f"<div style='font-size:10px;width:100%;text-align:right;padding-right:4ch;font-family:Microsoft YaHei,sans-serif;'>"
                 f"{header_text}</div>"
             )
         ftr_html = (
-            "<div style='font-size:10px;width:100%;text-align:right;font-family:Microsoft YaHei,sans-serif;'>"
+            "<div style='font-size:10px;width:100%;text-align:right;padding-right:4ch;font-family:Microsoft YaHei,sans-serif;'>"
             "页 <span class='pageNumber'></span> / <span class='totalPages'></span></div>"
         )
         params = {
@@ -344,40 +344,11 @@ class BatchUI:
                 self.current_seq_value = self.get_current_seq() or "NA"
             # overlay 与文件名需要加 X月- 前缀: 若 month_prefix 存在则 'X月-' 否则空
             prefix = f"{self.month_prefix}月-" if self.month_prefix else ""
-            overlay_text = f"{prefix}序号{self.current_seq_value}-{waybill}"
-            try:
-                js = (
-                    "(function(){"  # 创建顶部行并推下内容
-                    "var id='__sf_overlay__';" 
-                    "var old=document.getElementById(id);" 
-                    "if(old){old.remove();}" 
-                    # 创建容器 wrapper，如果没有则插入 body 最前面
-                    "var body=document.body;" 
-                    "var div=document.createElement('div');" 
-                    "div.id=id;" 
-                    "div.textContent='" + overlay_text + "';" 
-                    # 样式: 正常文档流顶部一行，右对齐，白底黑字
-                    "div.style.position='relative';" 
-                    "div.style.width='100%';" 
-                    "div.style.boxSizing='border-box';" 
-                    "div.style.textAlign='right';" 
-                    "div.style.font='16px/1.4 \"Microsoft YaHei\",sans-serif';" 
-                    "div.style.color='#000';" 
-                    "div.style.background='#fff';" 
-                    "div.style.padding='6px 12px';" 
-                    "div.style.borderBottom='1px solid #ddd';" 
-                    "div.style.margin='0';" 
-                    "if(body.firstChild){body.insertBefore(div, body.firstChild);}else{body.appendChild(div);}" 
-                    "})();"
-                )
-                self.driver.execute_script(js)
-            except Exception as e:
-                print(f"注入覆盖文字失败: {e}")
+            header_text = f"{prefix}序号{self.current_seq_value}-{waybill}"
 
             # 使用自定义文件名 序号{xu}-{waybill}.pdf
             custom_name = f"{prefix}序号{self.current_seq_value}-{waybill}"
-            # header_text 与 overlay_text 保持一致 (追踪文字段 BB)
-            pdf_path = print_to_pdf(self.driver, custom_name, header_text=overlay_text)
+            pdf_path = print_to_pdf(self.driver, custom_name, header_text=header_text)
             if pdf_path:
                 self.status_var.set(f"PDF 已生成: {os.path.basename(pdf_path)} 点击 '下一单'")
                 self.btn_next.config(state=tk.NORMAL)
