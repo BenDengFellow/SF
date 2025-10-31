@@ -31,19 +31,27 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 try:
-    from openpyxl import load_workbook
+    from openpyxl import load_workbook  # type: ignore
+    _openpyxl_ok = True
 except ModuleNotFoundError:
+    _openpyxl_ok = False
     print("缺少 openpyxl 库: 请先运行 'pip install openpyxl' 再启动程序或重新打包。")
     import sys as _sys
     raise SystemExit(1)
 try:
-    from selenium import webdriver
+    from selenium import webdriver  # type: ignore
     from selenium.webdriver.edge.options import Options as EdgeOptions
     from selenium.webdriver.remote.webdriver import WebDriver
+    _selenium_ok = True
 except ModuleNotFoundError:
+    _selenium_ok = False
     print("缺少 selenium 库: 请先运行 'pip install selenium' 再启动程序或重新打包。")
     import sys as _sys
     raise SystemExit(1)
+
+if _openpyxl_ok and _selenium_ok:
+    # 打包后的快速自检输出 (可注释掉)
+    print(f"[自检] openpyxl 与 selenium 已加载。Frozen={getattr(sys, 'frozen', False)}")
 
 BASE_URL = "https://www.sf-express.com/chn/sc/waybill/waybill-detail/{waybill}"
 

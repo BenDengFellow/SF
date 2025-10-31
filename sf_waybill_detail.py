@@ -57,6 +57,28 @@ def _detect_edge_binary() -> Optional[str]:
     return None
 
 
+def _find_bundled_driver() -> Optional[str]:
+    """在已打包(onefile)的可执行目录或当前工作目录寻找 msedgedriver.exe"""
+    candidates = []
+    try:
+        import sys as _sys
+        if getattr(_sys, 'frozen', False):
+            base_dir = os.path.dirname(_sys.executable)
+            candidates.append(os.path.join(base_dir, 'msedgedriver.exe'))
+            # PyInstaller _MEIPASS 临时目录
+            candidates.append(os.path.join(getattr(_sys, '_MEIPASS', base_dir), 'msedgedriver.exe'))
+    except Exception:
+        pass
+    # 工作目录候选
+    candidates.extend([
+        os.path.join(os.getcwd(), 'msedgedriver.exe'),
+        r'C:\msedgedriver.exe'
+    ])
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
 def create_driver(*, headless: bool = False, binary_path: Optional[str] = None, driver_path: Optional[str] = None) -> WebDriver:
     """仅创建 Edge 浏览器驱动.
 
@@ -77,27 +99,30 @@ def create_driver(*, headless: bool = False, binary_path: Optional[str] = None, 
     if binary_path:
         options.binary_location = binary_path
 
+    # 优先使用用户显式传入的 driver_path 或已打包目录中的驱动
+    if not driver_path:
+        driver_path = _find_bundled_driver()
+        if driver_path:
+            print(f"发现打包内驱动: {driver_path}")
     try:
-        # 直接调用, 让 Selenium Manager 自动下载/定位驱动
-        driver = webdriver.Edge(options=options)
+        if driver_path:
+            service = EdgeServiceLocal(executable_path=driver_path)
+            driver = webdriver.Edge(service=service, options=options)
+        else:
+            # 直接调用, 让 Selenium Manager 自动下载/定位驱动
+            driver = webdriver.Edge(options=options)
     except Exception as e:
-        print(f"Selenium Manager 自动获取 EdgeDriver 失败: {e}")
+        print(f"获取 EdgeDriver 失败: {e}")
         if not driver_path:
-            # 常见本地缓存/手动放置位置尝试
-            import os
-            guesses = [
-                os.path.join(os.getcwd(), "msedgedriver.exe"),
-                r"C:\\msedgedriver.exe",
-            ]
-            for g in guesses:
-                if os.path.exists(g):
-                    driver_path = g
-                    break
-        if not driver_path:
-            raise RuntimeError("无法自动获取 EdgeDriver。请手动下载 msedgedriver.exe 并使用 --driver-path 指定其路径。下载地址: https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/") from e
-        print(f"使用手动指定 EdgeDriver 路径: {driver_path}")
-        service = EdgeServiceLocal(executable_path=driver_path)
-        driver = webdriver.Edge(service=service, options=options)
+            # 再次尝试本地查找
+            fallback = _find_bundled_driver()
+            if fallback and fallback != driver_path:
+                print(f"尝试使用备用驱动: {fallback}")
+                service = EdgeServiceLocal(executable_path=fallback)
+                driver = webdriver.Edge(service=service, options=options)
+                driver.set_page_load_timeout(60)
+                return driver
+        raise RuntimeError("无法获取 EdgeDriver。请在同目录放置 msedgedriver.exe 或联网使用 Selenium Manager。") from e
 
     driver.set_page_load_timeout(60)
     return driver

@@ -1,80 +1,99 @@
-# 顺丰运单详情自动操作脚本
+# 顺丰运单批量与单票处理工具
 
-## 功能概述
-根据输入的顺丰运单号自动打开官网详情页 (仅使用 Windows Edge 浏览器)。脚本不再处理图形验证码与“展开详情”点击，若页面出现相关内容请在浏览器中手动操作。脚本使用 Selenium Manager 自动解析/下载 EdgeDriver, 无需额外安装。若自动获取失败，可手动下载 msedgedriver.exe 并使用 --driver-path 指定。
+本项目包含两个脚本（可打包为单文件 exe）：
 
-## 文件
-- `sf_waybill_detail.py` 主脚本
-- `sf_batch_waybill_ui.py` 批量处理脚本 (通过 Excel 读取多个运单, 循环生成 PDF)
-- `requirements.txt` 依赖列表
+1. 单票脚本：`sf_waybill_detail.py`
+   - 打开顺丰详情页面，人工输入验证码并手动点击“展开详情”。
+   - 点击悬浮确认窗口“确认”后生成当前页面 PDF。
+
+2. 批量脚本：`sf_batch_waybill_ui.py`
+   - 从 Excel 读取“序号”与“物流单号”列，表头可在前 20 行任意一行；遇到 `END` 停止。
+   - 支持多工作表选择。自动从工作表名提取连续数字块作为潜在“月”前缀：
+     * 若首数字块长度 1~2 且值 1-12 视为月份 (如 `1`, `02`, `12`) → 文件名与追踪文字使用 `M月-序号X-运单号`
+     * 否则不加月份前缀（保持 `序号X-运单号`）
+   - 每页 PDF 右上角显示追踪文字（含月前缀时加在最前）：`[M月-]序号{X}-{运单号}`
+   - 每页右下角显示页码：`第 {page} / {total} 页`
+   - 右边距增加 `4ch` 内边距避免文本贴边或裁切。
 
 ## 环境准备 (Windows PowerShell)
 ```powershell
-# 进入工作目录
 cd c:\Ai\2025\SF
-
-# 创建虚拟环境(如尚未创建)
 python -m venv .venv
-
-# 激活 (PowerShell)
 . .venv\Scripts\Activate.ps1
-
-# 安装依赖
 pip install -r requirements.txt
 ```
 
-## 运行脚本 (仅 Edge，默认弹出 UI)
+## 单票脚本示例运行
 ```powershell
-# 示例运单号替换为真实单号
 python sf_waybill_detail.py SF3286069356111
-
-# 无头模式(不显示浏览器窗口) - 不建议, UI 仍需桌面环境
-python sf_waybill_detail.py SF3286069356111 --headless
-
-# 若自动无法获取 EdgeDriver, 手动指定下载好的驱动路径
-python sf_waybill_detail.py SF3286069356111 --driver-path "C:\Path\To\msedgedriver.exe"
+python sf_waybill_detail.py SF3286069356111 --headless  # 可选, 不建议初期使用
+python sf_waybill_detail.py SF3286069356111 --driver-path "C:\Path\To\msedgedriver.exe"  # 离线驱动
 ```
-运行后浏览器会打开页面，验证码输入与“展开详情”由你手动完成。脚本会自动在屏幕右上角置顶弹出一个窗口：
-1. 点击“确认” -> 生成 `output/<运单号>.pdf`
-2. 点击“下一单” -> 关闭浏览器与窗口并退出程序
+确认窗口：
+1. “确认” 生成 `output/<运单号>.pdf`
+2. “下一单” 退出（单票模式即关闭）
 
-## 批量处理脚本 (`sf_batch_waybill_ui.py`)
-适用于需要按 Excel 批量浏览并导出 PDF 的场景。Excel 需包含列: `序号` 与 `物流单号`，其中 `物流单号` 行值为 `END` 表示终止。
-
-示例 Excel 结构:
-
-| 序号 | 物流单号         |
-|------|------------------|
-| 1    | SF3286069356111  |
-| 2    | SF1234567890123  |
-| 3    | END              |
-
-运行:
+## 批量脚本使用流程
 ```powershell
 python sf_batch_waybill_ui.py
 ```
-操作流程:
-1. 点击 `选择Excel` 选择文件。
-2. 在文本框输入想开始的序号数字 (如 1, 2 ...)，点击 `序号` 按钮。
-3. 脚本会打开对应运单页面，手动输入验证码并展开详情。
-4. 在 UI 中点 `确认` 生成 PDF (文件保存到 output/<运单号>.pdf)。
-5. 点 `下一单` 进入下一行运单；若该行运单号为 `END` 或到达文件末尾则结束。
-6. 可随时点 `结束` 退出 (关闭浏览器)。
+操作：
+1. 选择 Excel 文件。
+2. 选择工作表（按钮自动生成）。
+3. 浏览器打开第一条运单（跳过表头），人工输入验证码并展开详情。
+4. 点击“确认”生成 PDF；或点“下一单”跳过。
+5. 循环直到出现 `END` 或文件结束。
 
-注意: 不自动处理验证码与“展开详情”。
+Excel 示例：
+| 序号 | 物流单号        |
+|------|-----------------|
+| 1    | SF3286069356111 |
+| 2    | SF1234567890123 |
+| 3    | END             |
 
-## 注意事项
-1. 页面结构可能变化, 若脚本无法找到元素, 需根据最新的 DOM 选择器调整代码。
-2. 当前脚本仅支持 Edge 浏览器, 自动探测 Edge 可执行文件路径; 失败时可使用 `--binary-path` 指定浏览器, 使用 `--driver-path` 指定驱动。
-3. 若官网有反爬限制, 建议降低访问频率。
+## PDF 特性
+- 使用 DevTools `Page.printToPDF`，非截图，可复制文本。
+- header/footer 模板确保每页包含追踪文字与页码。
+- 移除 DOM 覆盖层，避免首页重复追踪文字。
+- 右侧 `4ch` 额外 padding 防止右上角文本贴边。
 
-## 可能的改进方向
-- 增加日志与异常处理, 保存页面HTML供后续分析
-- 使用 `argparse` 支持批量运单号处理与重试逻辑
-  (已移除验证码与自动点击“展开详情”逻辑, 若再次需要可在脚本中恢复相关函数)
-- UI 置顶显示在右上角，包含“确认”和“下一单”两个按钮，后续可扩展批量运单循环
- - 批量脚本可增加: 自动跳过已存在 PDF, 超时重试, 并发队列(需谨慎)
+## 打包为单文件可执行（PyInstaller）
+安装：
+```powershell
+pip install pyinstaller
+```
+构建：
+```powershell
+pyinstaller --clean --onefile --name sf_waybill_detail sf_waybill_detail.spec
+pyinstaller --clean --onefile --name sf_batch_waybill_ui sf_batch_waybill_ui.spec
+```
+生成的 exe 在 `dist/` 目录。
+
+### 离线 EdgeDriver
+1. 下载与目标 Edge 版本匹配的 `msedgedriver.exe`
+2. 放在项目根目录再执行打包（spec 会自动包含）
+3. 运行时查找顺序：可执行目录 → `_MEIPASS` → 当前工作目录 → `C:\msedgedriver.exe`
+
+## 常见问题
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| 无法获取 EdgeDriver | 离线且未放驱动 | 放置 `msedgedriver.exe` 同目录或联网运行 |
+| PDF 为空/缺少详情 | 未手动点击“展开详情” | 展开后再点“确认” |
+| Excel 未识别列 | 列名拼写或超出首 20 行 | 调整至前 20 行且列名精确匹配 |
+| 无月前缀 | 表名首数字不在 1-12 | 属正常逻辑，可改表名 |
+
+## 目录说明
+- `sf_waybill_detail.py`：单票脚本
+- `sf_batch_waybill_ui.py`：批量脚本与 Tkinter UI
+- `sf_waybill_detail.spec` / `sf_batch_waybill_ui.spec`：打包配置
+- `requirements.txt`：依赖文件
+- `README.md`：项目说明
+
+## 扩展建议
+- 支持命令行参数：`--start-seq`、`--headless`
+- 自动跳过已存在 PDF，记录日志
+- 重试逻辑（验证码失败）
+- 生成处理报告 (CSV/Excel)
 
 ## 免责声明
-请遵守顺丰官网的使用条款, 合理合法使用本脚本。
-add tag
+请遵守顺丰官网使用条款，合理合法使用本脚本。生成 PDF 含官网内容，不得用于未授权的商业再分发。
