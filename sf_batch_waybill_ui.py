@@ -30,10 +30,20 @@ from typing import Optional, List
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from openpyxl import load_workbook
-from selenium import webdriver
-from selenium.webdriver.edge.options import Options as EdgeOptions
-from selenium.webdriver.remote.webdriver import WebDriver
+try:
+    from openpyxl import load_workbook
+except ModuleNotFoundError:
+    print("缺少 openpyxl 库: 请先运行 'pip install openpyxl' 再启动程序或重新打包。")
+    import sys as _sys
+    raise SystemExit(1)
+try:
+    from selenium import webdriver
+    from selenium.webdriver.edge.options import Options as EdgeOptions
+    from selenium.webdriver.remote.webdriver import WebDriver
+except ModuleNotFoundError:
+    print("缺少 selenium 库: 请先运行 'pip install selenium' 再启动程序或重新打包。")
+    import sys as _sys
+    raise SystemExit(1)
 
 BASE_URL = "https://www.sf-express.com/chn/sc/waybill/waybill-detail/{waybill}"
 
@@ -63,15 +73,49 @@ def create_driver(headless: bool = False) -> WebDriver:
     return driver
 
 
-def print_to_pdf(driver: WebDriver, waybill: str, output_dir: str = "output") -> Optional[str]:
+def print_to_pdf(driver: WebDriver, basename: str, output_dir: str = "output", header_text: Optional[str] = None) -> Optional[str]:
+    """生成带每页右上角追踪文字与右下页码的 PDF.
+
+    利用 Chromium DevTools Page.printToPDF 的 headerTemplate/footerTemplate:
+    - headerTemplate/footerTemplate 是 HTML 片段; 可使用 class 名称并靠 CSS 控制位置。
+    - 占位符: <span class="pageNumber"></span> <span class="totalPages"></span>
+
+    局限: header/footer 默认在纸张 margin 区域, 不是页面主体第一行; 若需强制正文下移已通过插入覆盖层实现。
+    """
     try:
-        os.makedirs(output_dir, exist_ok=True)
-        pdf_b64 = driver.execute_cdp_cmd("Page.printToPDF", {
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.getcwd()
+        out_dir = os.path.join(base_dir, output_dir)
+        os.makedirs(out_dir, exist_ok=True)
+        # 构造 header/footer HTML
+        hdr_html = ""
+        if header_text:
+            # 右上角: 使用 table 或 div + text-align:right
+            hdr_html = (
+                f"<div style='font-size:10px;width:100%;text-align:right;font-family:Microsoft YaHei,sans-serif;'>"
+                f"{header_text}</div>"
+            )
+        ftr_html = (
+            "<div style='font-size:10px;width:100%;text-align:right;font-family:Microsoft YaHei,sans-serif;'>"
+            "页 <span class='pageNumber'></span> / <span class='totalPages'></span></div>"
+        )
+        params = {
             "landscape": False,
             "printBackground": True,
             "preferCSSPageSize": True,
-        })["data"]
-        pdf_path = os.path.join(output_dir, f"{waybill}.pdf")
+            "displayHeaderFooter": True,
+            "headerTemplate": hdr_html,
+            "footerTemplate": ftr_html,
+            # 适当留边, 避免覆盖正文: 单位英寸
+            "marginTop": 0.6,
+            "marginBottom": 0.6,
+            "marginLeft": 0.4,
+            "marginRight": 0.4,
+        }
+        pdf_b64 = driver.execute_cdp_cmd("Page.printToPDF", params)["data"]
+        pdf_path = os.path.join(out_dir, f"{basename}.pdf")
         with open(pdf_path, "wb") as f:
             f.write(base64.b64decode(pdf_b64))
         return pdf_path
@@ -97,9 +141,11 @@ class ExcelContext:
         return -1
 
 
-def load_excel(path: str) -> ExcelContext:
+def load_excel_sheet(path: str, sheet_name: str) -> ExcelContext:
     wb = load_workbook(path, read_only=True, data_only=True)
-    ws = wb.active
+    if sheet_name not in wb.sheetnames:
+        raise ValueError(f"工作表 {sheet_name} 不存在")
+    ws = wb[sheet_name]
     # 读取所有行 (保留空行结构)
     raw_rows: List[List[Optional[str]]] = []
     for row in ws.iter_rows(values_only=True):
@@ -147,6 +193,9 @@ class BatchUI:
         self.current_row_index: Optional[int] = None  # 在 excel_ctx.rows (不含表头) 中的索引
         self.current_seq_value: Optional[str] = None  # 保存当前序号 (xu)
         self.driver: Optional[WebDriver] = None
+        self.excel_path: Optional[str] = None
+        self.sheet_btn_frame = None
+        self.month_prefix: Optional[str] = None  # 从 sheet 名提取的首个数字序列 (X)
 
         # 第一行: 选择Excel
         top1 = tk.Frame(self.root)
@@ -183,13 +232,41 @@ class BatchUI:
         path = filedialog.askopenfilename(title="选择 Excel", filetypes=[("Excel", "*.xlsx")])
         if not path:
             return
+        # 清除旧的 sheet 按钮
+        if self.sheet_btn_frame:
+            self.sheet_btn_frame.destroy()
+            self.sheet_btn_frame = None
         try:
-            ctx = load_excel(path)
-            self.excel_ctx = ctx
+            wb = load_workbook(path, read_only=True, data_only=True)
+            self.excel_path = path
             self.excel_label_var.set(os.path.basename(path))
-            self.status_var.set("Excel 已加载, 输入序号后点击 '序号'")
+            # 生成 sheet 按钮行
+            self.sheet_btn_frame = tk.Frame(self.root)
+            self.sheet_btn_frame.pack(fill='x', pady=2)
+            for name in wb.sheetnames:
+                b = tk.Button(self.sheet_btn_frame, text=name, width=10,
+                              command=lambda n=name: self.load_sheet(n))
+                b.pack(side='left', padx=2)
+            self.status_var.set("请选择要使用的 sheet")
         except Exception as e:
-            messagebox.showerror("错误", f"加载 Excel 失败: {e}")
+            messagebox.showerror("错误", f"读取 Excel 失败: {e}")
+
+    def load_sheet(self, sheet_name: str):
+        if not self.excel_path:
+            return
+        try:
+            ctx = load_excel_sheet(self.excel_path, sheet_name)
+            self.excel_ctx = ctx
+            self.current_row_index = None
+            self.current_seq_value = None
+            # 提取 sheet 名中的首个连续数字作为 X (如 '10月数据' -> '10')
+            import re
+            m = re.search(r'(\d+)', sheet_name)
+            self.month_prefix = m.group(1) if m else None
+            self.status_var.set(f"Sheet '{sheet_name}' 已加载, 输入序号后点击 '序号'")
+            self.seq_info_var.set("")
+        except Exception as e:
+            messagebox.showerror("错误", f"加载 Sheet 失败: {e}")
 
     def set_order_no(self):
         if not self.excel_ctx:
@@ -218,6 +295,16 @@ class BatchUI:
         row = self.excel_ctx.data_rows[self.current_row_index]
         val = row[self.excel_ctx.waybill_col] if self.excel_ctx.waybill_col < len(row) else None
         return None if val is None else str(val).strip()
+
+    def get_current_seq(self) -> Optional[str]:
+        """从当前行读取序号列(防止 self.current_seq_value 丢失或为 None)."""
+        if self.excel_ctx is None or self.current_row_index is None:
+            return None
+        row = self.excel_ctx.data_rows[self.current_row_index]
+        if self.excel_ctx.seq_col >= len(row):
+            return None
+        cell = row[self.excel_ctx.seq_col]
+        return None if cell is None else str(cell).strip()
 
     def open_current_page(self):
         waybill = self.get_current_waybill()
@@ -252,8 +339,12 @@ class BatchUI:
         self.btn_confirm.config(state=tk.DISABLED)
         self.status_var.set("生成 PDF 中...")
         def _pdf():
-            # 注入右上角覆盖文字: 序号{xu}-{waybill}
-            overlay_text = f"序号{self.current_seq_value}-{waybill}"
+            # 确保序号存在 (可能因切换/下一单后未重新赋值导致 None)
+            if not self.current_seq_value:
+                self.current_seq_value = self.get_current_seq() or "NA"
+            # overlay 与文件名需要加 X月- 前缀: 若 month_prefix 存在则 'X月-' 否则空
+            prefix = f"{self.month_prefix}月-" if self.month_prefix else ""
+            overlay_text = f"{prefix}序号{self.current_seq_value}-{waybill}"
             try:
                 js = (
                     "(function(){"  # 创建顶部行并推下内容
@@ -284,8 +375,9 @@ class BatchUI:
                 print(f"注入覆盖文字失败: {e}")
 
             # 使用自定义文件名 序号{xu}-{waybill}.pdf
-            custom_name = f"序号{self.current_seq_value}-{waybill}"
-            pdf_path = print_to_pdf(self.driver, custom_name)
+            custom_name = f"{prefix}序号{self.current_seq_value}-{waybill}"
+            # header_text 与 overlay_text 保持一致 (追踪文字段 BB)
+            pdf_path = print_to_pdf(self.driver, custom_name, header_text=overlay_text)
             if pdf_path:
                 self.status_var.set(f"PDF 已生成: {os.path.basename(pdf_path)} 点击 '下一单'")
                 self.btn_next.config(state=tk.NORMAL)
@@ -301,7 +393,8 @@ class BatchUI:
         self.btn_next.config(state=tk.DISABLED)
         self.status_var.set("读取下一行...")
         self.current_row_index += 1
-        self.current_seq_value = None
+        # 立即根据新行刷新序号缓存，避免出现 None
+        self.current_seq_value = self.get_current_seq()
         if self.current_row_index >= len(self.excel_ctx.data_rows):
             self.status_var.set("已到文件末尾, 程序结束")
             return
@@ -310,7 +403,8 @@ class BatchUI:
             self.status_var.set("遇到 END, 程序结束")
             return
         excel_row_num = self.excel_ctx.header_row_index + 2 + self.current_row_index
-        self.seq_info_var.set(f"行: {excel_row_num} 运单: {waybill}")
+        seq_display = self.current_seq_value or "?"
+        self.seq_info_var.set(f"行: {excel_row_num} 序号: {seq_display} 运单: {waybill}")
         self.btn_confirm.config(state=tk.DISABLED)
         self.open_current_page()
 
